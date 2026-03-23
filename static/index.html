@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Mark Recognition</title>
+    <meta name="description" content="AI-powered system for automated mark recognition from exam answer sheets">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-card-hover: #1c2a4a;
+            --accent-primary: #6c63ff;
+            --accent-secondary: #e94560;
+            --accent-success: #00d2d3;
+            --accent-warning: #ffc048;
+            --text-primary: #e8e8f0;
+            --text-secondary: #a0a0b8;
+            --text-muted: #6b6b80;
+            --border: rgba(108, 99, 255, 0.2);
+            --glass: rgba(22, 33, 62, 0.7);
+            --shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            --radius: 16px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Animated gradient background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(ellipse at 20% 50%, rgba(108, 99, 255, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(233, 69, 96, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(0, 210, 211, 0.05) 0%, transparent 50%);
+            z-index: 0;
+            animation: bgShift 20s ease infinite alternate;
+        }
+
+        @keyframes bgShift {
+            0% { opacity: 0.8; transform: scale(1); }
+            100% { opacity: 1; transform: scale(1.05); }
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding: 2rem 0;
+        }
+
+        header h1 {
+            font-size: 2.4rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.5px;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            font-weight: 300;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            border-color: rgba(108, 99, 255, 0.4);
+        }
+
+        .card-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .card-title .icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+        }
+
+        /* Sheet Type Toggle */
+        .toggle-group {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .toggle-btn {
+            flex: 1;
+            padding: 1rem 1.5rem;
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+        }
+
+        .toggle-btn:hover {
+            border-color: var(--accent-primary);
+            color: var(--text-primary);
+        }
+
+        .toggle-btn.active {
+            border-color: var(--accent-primary);
+            background: rgba(108, 99, 255, 0.15);
+            color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(108, 99, 255, 0.1);
+        }
+
+        /* Upload Area */
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            padding: 3rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .upload-zone:hover,
+        .upload-zone.dragover {
+            border-color: var(--accent-primary);
+            background: rgba(108, 99, 255, 0.05);
+        }
+
+        .upload-zone .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        .upload-zone p {
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .upload-zone .hint {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        /* Processing indicator */
+        .processing {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .processing.show {
+            display: block;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            margin: 0 auto 1rem;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Results */
+        .results-section {
+            display: none;
+        }
+
+        .results-section.show {
+            display: block;
+        }
+
+        .result-field {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.8rem 1rem;
+            border-radius: 10px;
+            margin-bottom: 0.5rem;
+            background: rgba(255, 255, 255, 0.03);
+            transition: background 0.2s;
+        }
+
+        .result-field:hover {
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .result-field label {
+            font-weight: 500;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            min-width: 60px;
+        }
+
+        .result-field input {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.5rem 0.8rem;
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            width: 120px;
+            text-align: center;
+            transition: border-color 0.2s;
+        }
+
+        .result-field input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .marks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 0.5rem;
+        }
+
+        /* Batch Table */
+        .batch-table-wrapper {
+            overflow-x: auto;
+            border-radius: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        thead th {
+            padding: 0.8rem 0.6rem;
+            background: rgba(108, 99, 255, 0.15);
+            color: var(--accent-primary);
+            font-weight: 600;
+            text-align: center;
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+        }
+
+        tbody td {
+            padding: 0.6rem;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        tbody tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 0.8rem 1.5rem;
+            border: none;
+            border-radius: 10px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), #5a52d5);
+            color: white;
+            box-shadow: 0 4px 15px rgba(108, 99, 255, 0.3);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(108, 99, 255, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, var(--accent-success), #00b8b8);
+            color: #0f0f1a;
+            box-shadow: 0 4px 15px rgba(0, 210, 211, 0.3);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 210, 211, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--accent-secondary), #d63551);
+            color: white;
+        }
+
+        .btn-sm {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.8rem;
+            border-radius: 6px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 1.5rem;
+        }
+
+        /* Status messages */
+        .status {
+            padding: 0.8rem 1.2rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+            display: none;
+        }
+
+        .status.show {
+            display: block;
+        }
+
+        .status.success {
+            background: rgba(0, 210, 211, 0.1);
+            border: 1px solid rgba(0, 210, 211, 0.3);
+            color: var(--accent-success);
+        }
+
+        .status.error {
+            background: rgba(233, 69, 96, 0.1);
+            border: 1px solid rgba(233, 69, 96, 0.3);
+            color: var(--accent-secondary);
+        }
+
+        /* Preview */
+        .preview-img {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 12px;
+            margin-top: 1rem;
+            border: 1px solid var(--border);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container { padding: 1rem; }
+            header h1 { font-size: 1.6rem; }
+            .toggle-group { flex-direction: column; }
+            .marks-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI-Powered Mark Recognition</h1>
+            <p>Automated mark extraction from exam answer sheets using Computer Vision & Deep Learning</p>
+        </header>
+
+        <!-- Sheet Type Selection -->
+        <div class="card" id="uploadCard">
+            <div class="card-title"><span class="icon">📋</span> Sheet Type</div>
+            <div class="toggle-group">
+                <button class="toggle-btn active" id="btnDescriptive" onclick="setSheetType('descriptive')">
+                    📝 Descriptive Sheet
+                </button>
+                <button class="toggle-btn" id="btnMCQ" onclick="setSheetType('mcq')">
+                    ✅ MCQ Sheet
+                </button>
+            </div>
+
+            <!-- Upload Zone -->
+            <div class="card-title" style="margin-top: 1rem;"><span class="icon">📷</span> Upload Answer Sheet</div>
+            <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-icon">📤</div>
+                <p>Drag & drop your answer sheet image here</p>
+                <p class="hint">or click to browse • JPG, PNG supported</p>
+            </div>
+            <input type="file" id="fileInput" accept="image/*">
+            <img id="previewImg" class="preview-img" style="display:none;">
+
+            <!-- Processing -->
+            <div class="processing" id="processing">
+                <div class="spinner"></div>
+                <p>Processing answer sheet...</p>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Stage 1: Table Detection → Stage 2: Mark Recognition</p>
+            </div>
+
+            <!-- Status -->
+            <div class="status" id="statusMsg"></div>
+        </div>
+
+        <!-- Results -->
+        <div class="results-section" id="resultsSection">
+            <div class="card">
+                <div class="card-title"><span class="icon">🔍</span> Extracted Results</div>
+
+                <div class="result-field">
+                    <label>HT No / Roll No</label>
+                    <input type="text" id="htNoResult" placeholder="–">
+                </div>
+
+                <div id="descriptiveResults">
+                    <div class="card-title" style="margin-top: 1.5rem; font-size: 1rem;"><span class="icon">📊</span> Question Marks</div>
+                    <div class="marks-grid" id="marksGrid"></div>
+
+                    <div class="result-field" style="margin-top: 1rem;">
+                        <label>Descriptive Total</label>
+                        <input type="number" id="descTotalResult" placeholder="–">
+                    </div>
+                </div>
+
+                <div id="mcqResults" style="display: none;">
+                    <div class="result-field" style="margin-top: 1rem;">
+                        <label>MCQ Score</label>
+                        <input type="number" id="mcqScoreResult" placeholder="–">
+                    </div>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="addToBatch()">➕ Add to Batch</button>
+                    <button class="btn btn-danger btn-sm" onclick="clearResults()">Clear</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Batch Table -->
+        <div class="card" id="batchCard" style="display: none;">
+            <div class="card-title"><span class="icon">📑</span> Batch Entries <span id="entryCount" style="color: var(--accent-primary); margin-left: auto;"></span></div>
+
+            <div class="batch-table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>S.No</th>
+                            <th>HT No</th>
+                            <th>Q1a</th><th>Q1b</th>
+                            <th>Q2a</th><th>Q2b</th>
+                            <th>Q3a</th><th>Q3b</th>
+                            <th>Q4a</th><th>Q4b</th>
+                            <th>Q5a</th><th>Q5b</th>
+                            <th>Q6a</th><th>Q6b</th>
+                            <th>Desc Total</th>
+                            <th>MCQ Score</th>
+                            <th>Total</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="batchBody"></tbody>
+                </table>
+            </div>
+
+            <div class="btn-group">
+                <button class="btn btn-success" onclick="exportExcel()">📊 Export to Excel</button>
+                <button class="btn btn-danger btn-sm" onclick="clearBatch()">Clear All</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let sheetType = 'descriptive';
+        let batchEntries = [];
+        const API_BASE = '';
+
+        // Sheet type toggle
+        function setSheetType(type) {
+            sheetType = type;
+            document.getElementById('btnDescriptive').classList.toggle('active', type === 'descriptive');
+            document.getElementById('btnMCQ').classList.toggle('active', type === 'mcq');
+        }
+
+        // File upload
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = document.getElementById('previewImg');
+                img.src = e.target.result;
+                img.style.display = 'block';
+            };
+            reader.readAsDataURL(file);
+
+            // Process
+            processImage(file);
+        }
+
+        async function processImage(file) {
+            const processing = document.getElementById('processing');
+            const statusMsg = document.getElementById('statusMsg');
+
+            processing.classList.add('show');
+            statusMsg.classList.remove('show');
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('sheet_type', sheetType);
+
+            try {
+                const response = await fetch(`${API_BASE}/api/process`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Processing failed');
+                }
+
+                const data = await response.json();
+                displayResults(data);
+
+                statusMsg.className = 'status show success';
+                statusMsg.textContent = '✓ Answer sheet processed successfully!';
+            } catch (err) {
+                statusMsg.className = 'status show error';
+                statusMsg.textContent = '✗ Error: ' + err.message;
+            } finally {
+                processing.classList.remove('show');
+            }
+        }
+
+        function displayResults(data) {
+            document.getElementById('resultsSection').classList.add('show');
+
+            // HT Number
+            let htNo = '';
+            if (data.ht_no) {
+                if (typeof data.ht_no === 'string') {
+                    htNo = data.ht_no;
+                } else if (typeof data.ht_no === 'object') {
+                    htNo = data.ht_no.value || '';
+                }
+            }
+            document.getElementById('htNoResult').value = htNo;
+
+            if (sheetType === 'descriptive') {
+                document.getElementById('descriptiveResults').style.display = 'block';
+                document.getElementById('mcqResults').style.display = 'none';
+
+                // Build marks grid
+                const grid = document.getElementById('marksGrid');
+                grid.innerHTML = '';
+                const labels = ['q1a','q1b','q2a','q2b','q3a','q3b','q4a','q4b','q5a','q5b','q6a','q6b'];
+
+                labels.forEach(label => {
+                    const marks = data.marks || {};
+                    const val = marks[label]?.value ?? marks[label] ?? 0;
+                    const div = document.createElement('div');
+                    div.className = 'result-field';
+                    div.innerHTML = `
+                        <label>${label.toUpperCase()}</label>
+                        <input type="number" id="mark_${label}" value="${val}" min="0" max="10" style="width:70px;">
+                    `;
+                    grid.appendChild(div);
+                });
+
+                document.getElementById('descTotalResult').value = data.descriptive_total || 0;
+            } else {
+                document.getElementById('descriptiveResults').style.display = 'none';
+                document.getElementById('mcqResults').style.display = 'block';
+
+                document.getElementById('mcqScoreResult').value = data.mcq_score || 0;
+            }
+        }
+
+        function addToBatch() {
+            const htNo = document.getElementById('htNoResult').value;
+            if (!htNo) {
+                alert('HT Number is required');
+                return;
+            }
+
+            // Check if this HT No already exists
+            const existingIdx = batchEntries.findIndex(e => e.ht_no === htNo);
+
+            const labels = ['q1a','q1b','q2a','q2b','q3a','q3b','q4a','q4b','q5a','q5b','q6a','q6b'];
+            const marks = {};
+
+            if (sheetType === 'descriptive') {
+                labels.forEach(label => {
+                    const input = document.getElementById(`mark_${label}`);
+                    marks[label] = input ? parseInt(input.value) || 0 : 0;
+                });
+            }
+
+            const descTotal = parseInt(document.getElementById('descTotalResult')?.value) || 0;
+            const mcqScore = parseInt(document.getElementById('mcqScoreResult')?.value) || 0;
+
+            if (existingIdx >= 0) {
+                // Merge: update the existing entry
+                const existing = batchEntries[existingIdx];
+                if (sheetType === 'descriptive') {
+                    existing.marks = marks;
+                    existing.descriptive_total = descTotal;
+                } else {
+                    existing.mcq_score = mcqScore;
+                }
+                existing.total = (existing.descriptive_total || 0) + (existing.mcq_score || 0);
+            } else {
+                // New entry
+                const entry = {
+                    ht_no: htNo,
+                    marks: sheetType === 'descriptive' ? marks : {},
+                    descriptive_total: sheetType === 'descriptive' ? descTotal : 0,
+                    mcq_score: sheetType === 'mcq' ? mcqScore : 0,
+                    total: descTotal + mcqScore
+                };
+                batchEntries.push(entry);
+            }
+
+            renderBatchTable();
+            clearResults();
+        }
+
+        function renderBatchTable() {
+            const card = document.getElementById('batchCard');
+            const body = document.getElementById('batchBody');
+            const count = document.getElementById('entryCount');
+
+            card.style.display = batchEntries.length ? 'block' : 'none';
+            count.textContent = `${batchEntries.length} entries`;
+
+            body.innerHTML = '';
+            batchEntries.forEach((entry, idx) => {
+                const m = entry.marks || {};
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${idx + 1}</td>
+                    <td>${entry.ht_no}</td>
+                    <td>${m.q1a || 0}</td><td>${m.q1b || 0}</td>
+                    <td>${m.q2a || 0}</td><td>${m.q2b || 0}</td>
+                    <td>${m.q3a || 0}</td><td>${m.q3b || 0}</td>
+                    <td>${m.q4a || 0}</td><td>${m.q4b || 0}</td>
+                    <td>${m.q5a || 0}</td><td>${m.q5b || 0}</td>
+                    <td>${m.q6a || 0}</td><td>${m.q6b || 0}</td>
+                    <td><strong>${entry.descriptive_total || 0}</strong></td>
+                    <td><strong>${entry.mcq_score || 0}</strong></td>
+                    <td><strong>${entry.total || 0}</strong></td>
+                    <td><button class="btn btn-danger btn-sm" onclick="removeEntry(${idx})">✕</button></td>
+                `;
+                body.appendChild(tr);
+            });
+        }
+
+        function removeEntry(idx) {
+            batchEntries.splice(idx, 1);
+            renderBatchTable();
+        }
+
+        function clearResults() {
+            document.getElementById('resultsSection').classList.remove('show');
+            document.getElementById('previewImg').style.display = 'none';
+            document.getElementById('statusMsg').classList.remove('show');
+        }
+
+        function clearBatch() {
+            if (confirm('Clear all entries?')) {
+                batchEntries = [];
+                renderBatchTable();
+            }
+        }
+
+        async function exportExcel() {
+            if (!batchEntries.length) {
+                alert('No entries to export');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/export`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entries: batchEntries })
+                });
+
+                if (!response.ok) throw new Error('Export failed');
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'marks_report.xlsx';
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                alert('Export failed: ' + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
