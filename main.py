@@ -195,12 +195,12 @@ def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
         print("[DEBUG] No marked table found!")
     
     # Extract HT Number
-    ht_boxes = extract_ht_number_boxes(gray, thresh)
+    ht_row_data, ht_boxes = extract_ht_number_boxes(gray, thresh)
     print(f"[DEBUG] HT Number boxes found: {len(ht_boxes)}")
     for i, box in enumerate(ht_boxes):
         cv2.imwrite(f"{DEBUG_DIR}/08_ht_box_{i}.jpg", box)
     
-    ht_no, ht_conf = recognizer.recognize_ht_number(ht_boxes)
+    ht_no, ht_conf = recognizer.recognize_ht_number(ht_row_data, ht_boxes)
     print(f"[DEBUG] HT Number: {ht_no}, conf={ht_conf:.2f}")
     
     return {
@@ -218,9 +218,8 @@ def _process_mcq(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
     Extracts: HT No / Roll No, MCQ Score
     """
     # Extract HT/Roll Number
-    tables = find_table_regions(thresh)
-    ht_boxes = extract_ht_number_boxes(gray, tables)
-    ht_no, ht_conf = recognizer.recognize_ht_number(ht_boxes)
+    ht_row_data, ht_boxes = extract_ht_number_boxes(gray, thresh)
+    ht_no, ht_conf = recognizer.recognize_ht_number(ht_row_data, ht_boxes)
     
     # Extract Score
     score_roi = extract_mcq_score_region(gray)

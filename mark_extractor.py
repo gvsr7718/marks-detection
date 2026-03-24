@@ -123,12 +123,16 @@ def extract_mark_cells(gray: np.ndarray,
     return mark_cells, total_cell
 
 
-def extract_ht_number_boxes(gray: np.ndarray, thresh: np.ndarray) -> List[np.ndarray]:
+def extract_ht_number_boxes(gray: np.ndarray, thresh: np.ndarray) -> tuple:
     """
-    Extract the 10 boxes for the H.T. Number using morphological cell detection.
+    Extract the H.T. Number row as a full-row crop plus cell coordinates.
+    Returns (full_row_crop, cell_coords_relative) where cell_coords_relative
+    is a list of (x, y, w, h) tuples relative to the full_row_crop.
+    
     The H.T. number section is a single row of 11 cells ("H.T. No." label + 10 digit boxes).
     """
     height = gray.shape[0]
+    width = gray.shape[1]
     cells = detect_tables_morphological(thresh)
     rows = group_cells_into_rows(cells)
     
@@ -146,7 +150,7 @@ def extract_ht_number_boxes(gray: np.ndarray, thresh: np.ndarray) -> List[np.nda
             
     if not ht_row:
         print("[DEBUG] No suitable HT Number row found!")
-        return []
+        return None, []
         
     print(f"[DEBUG] Found HT Number row: {len(ht_row)} cells")
     
@@ -156,14 +160,37 @@ def extract_ht_number_boxes(gray: np.ndarray, thresh: np.ndarray) -> List[np.nda
     # We want the remaining 10 boxes (skipping the label).
     box_cells = cells_sorted[-10:] if len(cells_sorted) >= 10 else cells_sorted
     
+    # Compute the full bounding box for the 10 digit cells
+    x_min = min(c['x'] for c in box_cells)
+    y_min = min(c['y'] for c in box_cells)
+    x_max = max(c['x'] + c['w'] for c in box_cells)
+    y_max = max(c['y'] + c['h'] for c in box_cells)
+    
+    # Add small margins
+    x_min = max(0, x_min - 2)
+    y_min = max(0, y_min - 2)
+    x_max = min(width, x_max + 2)
+    y_max = min(height, y_max + 2)
+    
+    full_row_crop = gray[y_min:y_max, x_min:x_max]
+    
+    # Compute relative cell coordinates
+    cell_coords = []
+    for c in box_cells:
+        rel_x = c['x'] - x_min
+        rel_y = c['y'] - y_min
+        cell_coords.append((rel_x, rel_y, c['w'], c['h']))
+    
+    # Also save individual boxes for debug
     boxes = []
-    pad = 4 # Small padding crop to avoid boundaries
     for c in box_cells:
         x, y, w, h = c['x'], c['y'], c['w'], c['h']
-        crop = gray[max(0, y+pad):min(height, y+h-pad), max(0, x+pad):min(gray.shape[1], x+w-pad)]
+        pad_x = int(w * 0.15)
+        pad_y = int(h * 0.15)
+        crop = gray[max(0, y+pad_y):min(height, y+h-pad_y), max(0, x+pad_x):min(width, x+w-pad_x)]
         boxes.append(crop)
         
-    return boxes
+    return (full_row_crop, cell_coords), boxes
 
 
 def extract_mcq_score_region(gray: np.ndarray) -> np.ndarray:

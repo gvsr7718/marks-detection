@@ -211,32 +211,69 @@ class DigitRecognizer:
         avg_conf = total_conf / len(digits) if digits else 0.0
         return mark_value, avg_conf
     
-    def recognize_ht_number(self, box_images: list) -> tuple:
-        import pytesseract
-        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-        if not box_images:
+    def recognize_ht_number(self, ht_row_data, box_images=None) -> tuple:
+        """
+        Recognize HT number from the full row image with cell borders erased.
+        Uses 4x upscaled full-row EasyOCR for best contextual recognition.
+        
+        Args:
+            ht_row_data: tuple of (full_row_crop, cell_coords) for the row image.
+            box_images: unused, kept for API compatibility.
+        """
+        import cv2
+        self._initialize()
+        
+        if ht_row_data is None:
             return "", 0.0
+        
+        full_row_crop, cell_coords = ht_row_data
+        if full_row_crop is None or full_row_crop.size == 0:
+            return "", 0.0
+        
+        # Binarize: black text on white background
+        _, binary = cv2.threshold(full_row_crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Erase the printed cell borders by drawing white lines over them
+        h_img = binary.shape[0]
+        for (cx, cy, cw, ch) in cell_coords:
+            cv2.line(binary, (cx, 0), (cx, h_img), 255, 4)
+            cv2.line(binary, (cx + cw, 0), (cx + cw, h_img), 255, 4)
+        cv2.line(binary, (0, 0), (binary.shape[1], 0), 255, 4)
+        cv2.line(binary, (0, h_img - 1), (binary.shape[1], h_img - 1), 255, 4)
+        
+        # Add white border padding
+        bordered = cv2.copyMakeBorder(binary, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+        
+        # Save first debug image (before upscale)
+        cv2.imwrite("debug_output/ht_full_row_cleaned.jpg", bordered)
+        
+        # Upscale 4x for better OCR recognition
+        big = cv2.resize(bordered, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        
+        # Re-binarize after upscale to sharpen edges
+        _, big_binary = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Add extra border after upscale
+        final = cv2.copyMakeBorder(big_binary, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
+        
+        # Use EasyOCR on the high-resolution cleaned row
+        allowlist = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        rgb = cv2.cvtColor(final, cv2.COLOR_GRAY2RGB)
+        results = self.reader.readtext(rgb, allowlist=allowlist)
         
         ht_text = ""
         total_conf = 0.0
+        for _, text, conf in results:
+            ht_text += text.strip().upper()
+            total_conf += conf
         
-        allowlist = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        avg_conf = total_conf / len(results) if results else 0.0
         
-        for roi in box_images:
-            try:
-                # Use Tesseract with single character mode
-                config = f'--psm 10 -c tessedit_char_whitelist={allowlist}'
-                text = pytesseract.image_to_string(roi, config=config).strip()
-                
-                if text:
-                    ht_text += text[0].upper()
-                    total_conf += 0.8  # Tesseract doesn't give per-char confidence easily
-                else:
-                    ht_text += "?"
-            except Exception:
-                ht_text += "?"
+        # Truncate to 10 characters
+        if len(ht_text) > 10:
+            ht_text = ht_text[:10]
         
-        avg_conf = total_conf / len(box_images) if box_images else 0.0
+        print(f"[DEBUG] Final HT Number: '{ht_text}', conf={avg_conf:.2f}")
         return ht_text, avg_conf
     
     def recognize_score(self, score_roi: np.ndarray) -> tuple:
