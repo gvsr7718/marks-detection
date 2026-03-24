@@ -22,9 +22,7 @@ import numpy as np
 
 from table_detector import preprocess_image, find_table_regions
 from mark_extractor import (
-    identify_grading_tables,
-    find_marked_table,
-    extract_mark_cells,
+    extract_marks_grid_template,
     extract_ht_number_boxes,
     extract_mcq_score_region,
     extract_digit_contours
@@ -101,114 +99,142 @@ async def process_image(file: UploadFile = File(...), sheet_type: str = Form(...
 
 def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
     """
-    Process a descriptive answer sheet with debug output.
+    Process a descriptive answer sheet using template-aware grid extraction.
     """
-    # Stage 1: Detect tables
-    tables = find_table_regions(thresh)
-    print(f"[DEBUG] Found {len(tables)} table regions")
-    
-    # Debug: draw all detected tables
-    debug_img = cv2.cvtColor(gray.copy(), cv2.COLOR_GRAY2BGR)
-    for i, t in enumerate(tables):
-        cv2.rectangle(debug_img, (t['x'], t['y']), 
-                      (t['x']+t['w'], t['y']+t['h']), (0, 255, 0), 2)
-        cv2.putText(debug_img, f"Table {i} ({len(t.get('cells',[]))} cells)", 
-                    (t['x'], t['y']-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        print(f"[DEBUG]   Table {i}: x={t['x']}, y={t['y']}, w={t['w']}, h={t['h']}, "
-              f"rows={len(t.get('rows',[]))}, cells={len(t.get('cells',[]))}")
-    cv2.imwrite(f"{DEBUG_DIR}/04_detected_tables.jpg", debug_img)
-    
-    # Identify grading tables
-    grading_tables = identify_grading_tables(gray, tables)
-    print(f"[DEBUG] Grading tables found: {len(grading_tables)}")
-    
-    if not grading_tables:
-        grading_tables = tables
-        print("[DEBUG] No grading tables via OCR, using all tables")
-    
-    # Find marked table
-    marked_table = find_marked_table(img_color, grading_tables)
-    
+    # ── Stage 1: Extract marks grid (template-aware) ────────────────────────
+    mark_cells, total_cell, table_info = extract_marks_grid_template(
+        gray, thresh, img_color, debug_dir=DEBUG_DIR
+    )
+    print(f"[DEBUG] Extracted {len(mark_cells)} mark cells, "
+          f"total_cell={'yes' if total_cell is not None else 'no'}")
+
+    # Debug: save each extracted cell
+    for i, cell in enumerate(mark_cells):
+        cv2.imwrite(f"{DEBUG_DIR}/06_cell_{i}.jpg", cell)
+        print(f"[DEBUG]   Cell {i}: shape={cell.shape}")
+    if total_cell is not None:
+        cv2.imwrite(f"{DEBUG_DIR}/06_cell_total.jpg", total_cell)
+
+    # ── Stage 2: Recognise digits in each cell ──────────────────────────────
+    question_labels = ['q1a', 'q1b', 'q2a', 'q2b', 'q3a', 'q3b',
+                       'q4a', 'q4b', 'q5a', 'q5b', 'q6a', 'q6b']
     marks = {}
     descriptive_total = 0
-    
-    if marked_table:
-        print(f"[DEBUG] Marked table: x={marked_table['x']}, y={marked_table['y']}, "
-              f"rows={len(marked_table.get('rows',[]))}")
-        
-        # Debug: draw marked table rows
-        debug_marked = cv2.cvtColor(gray.copy(), cv2.COLOR_GRAY2BGR)
-        for ri, row in enumerate(marked_table.get('rows', [])):
-            for ci, c in enumerate(row):
-                color = (0, 0, 255) if ri == len(marked_table.get('rows',[])) - 1 else (0, 255, 0)
-                cv2.rectangle(debug_marked, (c['x'], c['y']), 
-                              (c['x']+c['w'], c['y']+c['h']), color, 2)
-                cv2.putText(debug_marked, f"R{ri}C{ci}", (c['x']+2, c['y']+15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-        cv2.imwrite(f"{DEBUG_DIR}/05_marked_table_cells.jpg", debug_marked)
-        
-        mark_cells, total_cell = extract_mark_cells(gray, marked_table)
-        print(f"[DEBUG] Extracted {len(mark_cells)} mark cells, total_cell={'yes' if total_cell is not None else 'no'}")
-        
-        # Debug: save each extracted cell
-        for i, cell in enumerate(mark_cells):
-            cv2.imwrite(f"{DEBUG_DIR}/06_cell_{i}.jpg", cell)
-            print(f"[DEBUG]   Cell {i}: shape={cell.shape}")
-        
-        if total_cell is not None:
-            cv2.imwrite(f"{DEBUG_DIR}/06_cell_total.jpg", total_cell)
-        
-        question_labels = ['q1a', 'q1b', 'q2a', 'q2b', 'q3a', 'q3b',
-                          'q4a', 'q4b', 'q5a', 'q5b', 'q6a', 'q6b']
-        
-        for i, cell_img in enumerate(mark_cells):
-            if i < len(question_labels):
-                digit_images = extract_digit_contours(cell_img)
-                print(f"[DEBUG]   {question_labels[i]}: {len(digit_images)} digit contours found")
-                
-                # Save digit contour images
-                for di, dimg in enumerate(digit_images):
-                    cv2.imwrite(f"{DEBUG_DIR}/07_digit_{question_labels[i]}_{di}.jpg", dimg)
-                
-                mark_val, conf = recognizer.recognize_marks_from_cell(digit_images)
-                marks[question_labels[i]] = {
-                    "value": mark_val,
-                    "confidence": round(conf, 2)
-                }
-                print(f"[DEBUG]   {question_labels[i]}: recognized={mark_val}, conf={conf:.2f}")
-        
-        for label in question_labels:
-            if label not in marks:
-                marks[label] = {"value": 0, "confidence": 0.0}
-        
-        if total_cell is not None:
-            digit_images = extract_digit_contours(total_cell)
-            descriptive_total, _ = recognizer.recognize_marks_from_cell(digit_images)
-            print(f"[DEBUG] OCR Total: {descriptive_total}")
-            calc_total = sum(m["value"] for m in marks.values())
-            if descriptive_total > 20 or descriptive_total != calc_total:
-                print(f"[DEBUG] Fallback to calculated total: {calc_total} instead of {descriptive_total}")
-                descriptive_total = calc_total
+
+    for i, cell_img in enumerate(mark_cells):
+        if i >= len(question_labels):
+            break
+        label = question_labels[i]
+
+        # Primary: EasyOCR on the cell crop (more robust for handwritten)
+        easyocr_val, easyocr_conf = _easyocr_read_cell(recognizer, cell_img)
+
+        # Fallback: contour extraction + AlexNet
+        digit_images = extract_digit_contours(cell_img)
+        alexnet_val, alexnet_conf = recognizer.recognize_marks_from_cell(digit_images)
+
+        # Use EasyOCR if it returned a plausible value; else AlexNet
+        if easyocr_val is not None and 0 <= easyocr_val <= 10:
+            mark_val = easyocr_val
+            conf = easyocr_conf
+            src = "easyocr"
         else:
-            descriptive_total = sum(m["value"] for m in marks.values())
+            mark_val = alexnet_val
+            conf = alexnet_conf
+            src = "alexnet"
+
+        marks[label] = {"value": mark_val, "confidence": round(conf, 2)}
+        print(f"[DEBUG]   {label}: {mark_val} (conf={conf:.2f}, src={src}) "
+              f"[easyocr={easyocr_val}, alexnet={alexnet_val}]")
+
+    # Fill any missing labels with 0
+    for label in question_labels:
+        if label not in marks:
+            marks[label] = {"value": 0, "confidence": 0.0}
+
+    # ── Stage 3: Total ──────────────────────────────────────────────────────
+    if total_cell is not None:
+        easyocr_total, _ = _easyocr_read_cell(recognizer, total_cell)
+        digit_images = extract_digit_contours(total_cell)
+        alexnet_total, _ = recognizer.recognize_marks_from_cell(digit_images)
+        calc_total = sum(m["value"] for m in marks.values())
+        # Pick the most plausible total
+        descriptive_total = calc_total
+        if easyocr_total is not None and easyocr_total == calc_total:
+            descriptive_total = easyocr_total
+        print(f"[DEBUG] Total: easyocr={easyocr_total}, alexnet={alexnet_total}, "
+              f"calc={calc_total} → using {descriptive_total}")
     else:
-        print("[DEBUG] No marked table found!")
-    
-    # Extract HT Number
+        descriptive_total = sum(m["value"] for m in marks.values())
+
+    # ── Stage 4: HT Number ──────────────────────────────────────────────────
     ht_row_data, ht_boxes = extract_ht_number_boxes(gray, thresh)
     print(f"[DEBUG] HT Number boxes found: {len(ht_boxes)}")
     for i, box in enumerate(ht_boxes):
         cv2.imwrite(f"{DEBUG_DIR}/08_ht_box_{i}.jpg", box)
-    
+
     ht_no, ht_conf = recognizer.recognize_ht_number(ht_row_data, ht_boxes)
     print(f"[DEBUG] HT Number: {ht_no}, conf={ht_conf:.2f}")
-    
+
     return {
         "ht_no": {"value": ht_no, "confidence": round(ht_conf, 2)},
         "marks": marks,
         "descriptive_total": descriptive_total,
         "max_marks": 20
     }
+
+
+def _easyocr_read_cell(recognizer, cell_img):
+    """
+    Use EasyOCR to read a single digit (0-10) from a small cell crop.
+    Uses CLAHE contrast enhancement to handle faint handwriting.
+    Returns (int_value, confidence) or (None, 0.0) on failure.
+    """
+    import cv2 as _cv2
+    import numpy as _np
+    try:
+        # Step 1: Enhance contrast with CLAHE (handles faint pencil marks)
+        clahe = _cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+        enhanced = clahe.apply(cell_img)
+
+        # Step 2: Upscale 4x for better OCR
+        big = _cv2.resize(enhanced, None, fx=4, fy=4,
+                          interpolation=_cv2.INTER_CUBIC)
+
+        # Step 3: Otsu binarization on enhanced image
+        _, binary = _cv2.threshold(big, 0, 255,
+                                   _cv2.THRESH_BINARY + _cv2.THRESH_OTSU)
+
+        # Step 4: Empty-cell detection on binarized image
+        # After Otsu binarization, dark pixels (0) represent ink marks
+        dark_pixels = _np.sum(binary == 0)
+        total_pixels = binary.size
+        dark_ratio = dark_pixels / total_pixels
+        if dark_ratio < 0.01:  # less than 1% ink → blank cell
+            return None, 0.0
+
+        # Step 5: Add white border for OCR
+        bordered = _cv2.copyMakeBorder(
+            binary, 20, 20, 20, 20,
+            _cv2.BORDER_CONSTANT, value=255
+        )
+        rgb = _cv2.cvtColor(bordered, _cv2.COLOR_GRAY2RGB)
+
+        # Step 6: EasyOCR digit recognition
+        recognizer._initialize()
+        results = recognizer.reader.readtext(
+            rgb, allowlist='0123456789', paragraph=False
+        )
+        if results:
+            best = max(results, key=lambda r: r[2])
+            text = best[1].strip()
+            if text.isdigit():
+                val = int(text)
+                if 0 <= val <= 10:
+                    return val, float(best[2])
+        return None, 0.0
+    except Exception:
+        return None, 0.0
 
 
 def _process_mcq(img_color, gray, thresh, recognizer) -> Dict[str, Any]:

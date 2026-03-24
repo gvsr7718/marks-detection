@@ -221,6 +221,7 @@ class DigitRecognizer:
             box_images: unused, kept for API compatibility.
         """
         import cv2
+        import re
         self._initialize()
         
         if ht_row_data is None:
@@ -232,49 +233,61 @@ class DigitRecognizer:
         
         # Binarize: black text on white background
         _, binary = cv2.threshold(full_row_crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Strategy 1: Raw image without border erasure and without upscaling
+        # Empirically, for faint/thin grids, upscaling destroys the faint strokes.
+        raw_pad = cv2.copyMakeBorder(binary, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+        raw_rgb = cv2.cvtColor(raw_pad, cv2.COLOR_GRAY2RGB)
+        res_raw = self.reader.readtext(raw_rgb, allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', paragraph=False)
+        text_raw = ""
+        conf_raw = 0.0
+        for _, t, conf in res_raw:
+            text_raw += re.sub(r'[^A-Z0-9]', '', t.upper())
+            conf_raw += conf
+        conf_raw = conf_raw / len(res_raw) if res_raw else 0.0
         
-        # Erase the printed cell borders by drawing white lines over them
+        # Strategy 2: Erasing cell borders (helps when borders are thick black lines)
+        # Empirically, thick grids need border erasure followed by 4x upscaling.
+        binary_erased = binary.copy()
         h_img = binary.shape[0]
         for (cx, cy, cw, ch) in cell_coords:
-            cv2.line(binary, (cx, 0), (cx, h_img), 255, 4)
-            cv2.line(binary, (cx + cw, 0), (cx + cw, h_img), 255, 4)
-        cv2.line(binary, (0, 0), (binary.shape[1], 0), 255, 4)
-        cv2.line(binary, (0, h_img - 1), (binary.shape[1], h_img - 1), 255, 4)
+            cv2.line(binary_erased, (cx, 0), (cx, h_img), 255, 4)
+            cv2.line(binary_erased, (cx + cw, 0), (cx + cw, h_img), 255, 4)
+        cv2.line(binary_erased, (0, 0), (binary_erased.shape[1], 0), 255, 4)
+        cv2.line(binary_erased, (0, h_img - 1), (binary_erased.shape[1], h_img - 1), 255, 4)
         
-        # Add white border padding
-        bordered = cv2.copyMakeBorder(binary, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+        erased_pad = cv2.copyMakeBorder(binary_erased, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
+        erased_big = cv2.resize(erased_pad, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        _, erased_bin = cv2.threshold(erased_big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        res_erased = self.reader.readtext(cv2.cvtColor(erased_bin, cv2.COLOR_GRAY2RGB), allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', paragraph=False)
         
-        # Save first debug image (before upscale)
-        cv2.imwrite("debug_output/ht_full_row_cleaned.jpg", bordered)
+        text_erased = ""
+        conf_erased = 0.0
+        for _, t, conf in res_erased:
+            text_erased += re.sub(r'[^A-Z0-9]', '', t.upper())
+            conf_erased += conf
+        conf_erased = conf_erased / len(res_erased) if res_erased else 0.0
         
-        # Upscale 4x for better OCR recognition
-        big = cv2.resize(bordered, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-        
-        # Re-binarize after upscale to sharpen edges
-        _, big_binary = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Add extra border after upscale
-        final = cv2.copyMakeBorder(big_binary, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
-        
-        # Use EasyOCR on the high-resolution cleaned row
-        allowlist = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        rgb = cv2.cvtColor(final, cv2.COLOR_GRAY2RGB)
-        results = self.reader.readtext(rgb, allowlist=allowlist)
-        
-        ht_text = ""
-        total_conf = 0.0
-        for _, text, conf in results:
-            ht_text += text.strip().upper()
-            total_conf += conf
-        
-        avg_conf = total_conf / len(results) if results else 0.0
-        
-        # Truncate to 10 characters
+        # Pick the best text. We expect exactly 10 characters for H.T. Number
+        if len(text_raw) == 10:
+            ht_text, ht_conf = text_raw, conf_raw
+            src = "raw"
+        elif len(text_erased) == 10:
+            ht_text, ht_conf = text_erased, conf_erased
+            src = "erased"
+        else:
+            # Fallback: pick the one closest to 10
+            if abs(len(text_raw) - 10) <= abs(len(text_erased) - 10):
+                ht_text, ht_conf = text_raw, conf_raw
+                src = "raw"
+            else:
+                ht_text, ht_conf = text_erased, conf_erased
+                src = "erased"
+
         if len(ht_text) > 10:
             ht_text = ht_text[:10]
-        
-        print(f"[DEBUG] Final HT Number: '{ht_text}', conf={avg_conf:.2f}")
-        return ht_text, avg_conf
+            
+        print(f"[DEBUG] Final HT Number: '{ht_text}' (len={len(ht_text)}), conf={ht_conf:.2f}, strategy={src}")
+        return ht_text, ht_conf
     
     def recognize_score(self, score_roi: np.ndarray) -> tuple:
         """
