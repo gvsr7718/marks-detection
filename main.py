@@ -127,7 +127,7 @@ def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
         label = question_labels[i]
 
         # Primary: EasyOCR on the cell crop (more robust for handwritten)
-        easyocr_val, easyocr_conf = _easyocr_read_cell(recognizer, cell_img)
+        easyocr_val, easyocr_conf, _ = _easyocr_read_cell(recognizer, cell_img, max_val_allowed=10)
 
         # Fallback: contour extraction + AlexNet
         digit_images = extract_digit_contours(cell_img)
@@ -154,15 +154,52 @@ def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
 
     # ── Stage 3: Total ──────────────────────────────────────────────────────
     if total_cell is not None:
-        easyocr_total, _ = _easyocr_read_cell(recognizer, total_cell)
+        easyocr_total, _, total_candidates = _easyocr_read_cell(recognizer, total_cell, max_val_allowed=100)
         digit_images = extract_digit_contours(total_cell)
         alexnet_total, _ = recognizer.recognize_marks_from_cell(digit_images)
         calc_total = sum(m["value"] for m in marks.values())
+        
+        # Valid extracted total is easyocr or alexnet (trust easyocr first if valid)
+        extracted_total = easyocr_total if (easyocr_total is not None and 0 <= easyocr_total <= 100) else alexnet_total
+
+        # --- Total Validation Heuristics ---
+        # Heuristic 1: Explicit Total Match
+        # The handwriting for '2' is frequently misread by OCR as '9' (diff 7).
+        # Since the TOTAL cell might contain fractions (e.g. '14', '20'), we check all extracted numbers!
+        validation_candidates = set(total_candidates)
+        if extracted_total is not None:
+            validation_candidates.add(extracted_total)
+            
+        corrected_via_explicit_total = False
+        for candidate_total in validation_candidates:
+            if calc_total - candidate_total == 7:
+                nines = [k for k, v in marks.items() if v["value"] == 9]
+                if len(nines) == 1:
+                    marks[nines[0]]["value"] = 2
+                    print(f"[DEBUG] Total Validation Heuristic: corrected {nines[0]} from 9 to 2 to match explicit Total={candidate_total}")
+                    calc_total = sum(m["value"] for m in marks.values())
+                    extracted_total = candidate_total  # Lock in this valid total
+                    corrected_via_explicit_total = True
+                    break
+
+        # Heuristic 2: Exam Max Marks Overflow boundary
+        # If the explicit total cell was unreadable, but our computed total OVERFLOWS the absolute exam maximum (20),
+        # we can mathematically deduce any extracted '9's MUST be hallucinations of '2'.
+        if not corrected_via_explicit_total and calc_total > 20:
+            nines = [k for k, v in marks.items() if v["value"] == 9]
+            for nine_key in nines:
+                marks[nine_key]["value"] = 2
+                calc_total -= 7
+                print(f"[DEBUG] Overflow Heuristic: corrected {nine_key} from 9 to 2 because stringently exceeded max_marks (20)")
+                if calc_total <= 20:
+                    break
+
         # Pick the most plausible total
         descriptive_total = calc_total
-        if easyocr_total is not None and easyocr_total == calc_total:
-            descriptive_total = easyocr_total
-        print(f"[DEBUG] Total: easyocr={easyocr_total}, alexnet={alexnet_total}, "
+        if extracted_total is not None and extracted_total == calc_total:
+            descriptive_total = extracted_total
+            
+        print(f"[DEBUG] Total: candidates={total_candidates}, alexnet={alexnet_total}, "
               f"calc={calc_total} → using {descriptive_total}")
     else:
         descriptive_total = sum(m["value"] for m in marks.values())
@@ -184,7 +221,7 @@ def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
     }
 
 
-def _easyocr_read_cell(recognizer, cell_img):
+def _easyocr_read_cell(recognizer, cell_img, max_val_allowed=100):
     """
     Use EasyOCR to read a single digit (0-10) from a small cell crop.
     Uses CLAHE contrast enhancement to handle faint handwriting.
@@ -225,16 +262,25 @@ def _easyocr_read_cell(recognizer, cell_img):
         results = recognizer.reader.readtext(
             rgb, allowlist='0123456789', paragraph=False
         )
+        
+        # We can return either the absolute best value (for single marks)
+        # or ALL valid numbers (for checking the TOTAL cell which might be a fraction '14/20')
+        valid_numbers = []
         if results:
-            best = max(results, key=lambda r: r[2])
-            text = best[1].strip()
-            if text.isdigit():
-                val = int(text)
-                if 0 <= val <= 10:
-                    return val, float(best[2])
-        return None, 0.0
+            for r in results:
+                text = r[1].strip()
+                if text.isdigit():
+                    v = int(text)
+                    if 0 <= v <= max_val_allowed:
+                        valid_numbers.append((v, float(r[2])))
+            
+            if valid_numbers:
+                best = max(valid_numbers, key=lambda x: x[1])
+                return best[0], best[1], [v[0] for v in valid_numbers]
+                
+        return None, 0.0, []
     except Exception:
-        return None, 0.0
+        return None, 0.0, []
 
 
 def _process_mcq(img_color, gray, thresh, recognizer) -> Dict[str, Any]:

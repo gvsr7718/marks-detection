@@ -12,9 +12,40 @@ import numpy as np
 from typing import Tuple, List, Dict, Optional
 
 
+def _order_points(pts: np.ndarray) -> np.ndarray:
+    """Order coordinates: top-left, top-right, bottom-right, bottom-left."""
+    rect = np.zeros((4, 2), dtype="float32")
+    pts_arr = np.array(pts)
+    s = pts_arr.sum(axis=1)
+    rect[0] = pts_arr[np.argmin(s)]
+    rect[2] = pts_arr[np.argmax(s)]
+    diff = np.diff(pts_arr, axis=1)
+    rect[1] = pts_arr[np.argmin(diff)]
+    rect[3] = pts_arr[np.argmax(diff)]
+    return rect
+
+def _four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Crop and warp bounding box to rectilinear top-down view."""
+    rect = _order_points(pts)
+    (tl, tr, br, bl) = rect
+    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+    maxWidth = max(int(widthA), int(widthB))
+    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    maxHeight = max(int(heightA), int(heightB))
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+    return warped
+
 def preprocess_image(image_bytes: bytes) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Decode, resize, deskew, and binarize the input image.
+    Decode, detect paper border and deskew (crop to uniform rectangle), resize, and binarize.
     
     Returns:
         img_color: color image (for red pixel detection)
@@ -27,20 +58,45 @@ def preprocess_image(image_bytes: bytes) -> Tuple[np.ndarray, np.ndarray, np.nda
     
     if img is None:
         raise ValueError("Invalid image or cannot decode")
+
+    # 2. Detect Paper Border / Document Contour
+    # Convert to grayscale and blur to remove noise
+    doc_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    doc_blur = cv2.GaussianBlur(doc_gray, (5, 5), 0)
+    doc_edged = cv2.Canny(doc_blur, 75, 200)
+
+    val_cnts, _ = cv2.findContours(doc_edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    # Convert tuple of arrays to list before slicing to satisfy static type checker
+    val_cnts_list = list(val_cnts)
+    val_cnts_sorted = sorted(val_cnts_list, key=cv2.contourArea, reverse=True)[:5]
     
-    # 2. Resize to 1500px width maintaining aspect ratio
+    doc_cnt = None
+    for c in val_cnts_sorted:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) == 4:
+            # Check if area is large enough to be the paper (at least 20% of image)
+            if cv2.contourArea(c) > (img.shape[0]*img.shape[1] * 0.20):
+                doc_cnt = approx
+                break
+
+    # Apply perspective transform if paper rectangle is found securely
+    if doc_cnt is not None and len(doc_cnt) == 4:
+        # Cast to numpy array to satisfy type checker
+        doc_cnt_arr = np.array(doc_cnt).reshape(4, 2)
+        img = _four_point_transform(img, doc_cnt_arr)
+    
+    # 3. Resize to 1500px width maintaining aspect ratio
     height, width = img.shape[:2]
     new_width = 1500
     ratio = new_width / float(width)
     new_height = int(height * ratio)
     img_resized = cv2.resize(img, (new_width, new_height))
     
-    # 3. Grayscale
+    # 4. Grayscale
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    # 4. Deskew using Hough Transform (Paper §3.1)
-    # The Hough transform maps points in the image to lines in parameter form
-    # and identifies line clusters corresponding to lines in the answer sheet
+    # 5. Deskew using Hough Transform (Fallback if paper crop missed minor rotation)
     thresh_deskew = cv2.adaptiveThreshold(
         cv2.GaussianBlur(gray, (9, 9), 0), 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
@@ -69,7 +125,7 @@ def preprocess_image(image_bytes: bytes) -> Tuple[np.ndarray, np.ndarray, np.nda
         img_resized = cv2.warpAffine(img_resized, M, (w, h), flags=cv2.INTER_CUBIC,
                                      borderMode=cv2.BORDER_REPLICATE)
     
-    # 5. Binarization for grid detection
+    # 6. Binarization for grid detection
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.adaptiveThreshold(
         blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -86,28 +142,38 @@ def detect_tables_morphological(thresh: np.ndarray,
     
     Uses horizontal and vertical line detection kernels to find grid structure,
     then extracts individual cells from the grid.
+    Introduced a pre-dilation step to actively bridge faded/faint ink gaps before
+    opening, preventing internal cell walls from merging on badly printed sheets.
     
     Returns:
         List of cell dicts with keys: x, y, w, h
     """
-    # Detect horizontal lines
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-    h_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, h_kernel)
+    # Dynamic scaling based on the image size
+    scale = thresh.shape[0] / 2000.0
     
-    # Detect vertical lines
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-    v_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel)
+    # 1. Detect horizontal lines (with pre-dilation to fix fading)
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(40 * scale) if scale > 0.5 else 40, 1))
+    h_dilate_k = cv2.getStructuringElement(cv2.MORPH_RECT, (int(10 * scale) if scale > 0.5 else 10, 1))
+    thresh_h_dilated = cv2.dilate(thresh, h_dilate_k, iterations=1)
+    h_lines = cv2.morphologyEx(thresh_h_dilated, cv2.MORPH_OPEN, h_kernel)
     
-    # Combine lines to form the grid
-    grid = cv2.add(h_lines, v_lines)
+    # 2. Detect vertical lines (with pre-dilation)
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, int(40 * scale) if scale > 0.5 else 40))
+    v_dilate_k = cv2.getStructuringElement(cv2.MORPH_RECT, (1, int(10 * scale) if scale > 0.5 else 10))
+    thresh_v_dilated = cv2.dilate(thresh, v_dilate_k, iterations=1)
+    v_lines = cv2.morphologyEx(thresh_v_dilated, cv2.MORPH_OPEN, v_kernel)
     
-    # Dilate to close gaps in hand-drawn lines
-    kernel = np.ones((3, 3), np.uint8)
-    grid = cv2.dilate(grid, kernel, iterations=1)
+    # Combine horizontal and vertical structures
+    table_mask = cv2.add(h_lines, v_lines)
     
-    # Find contours (cells)
-    contours, hierarchy = cv2.findContours(grid, cv2.RETR_TREE, 
-                                           cv2.CHAIN_APPROX_SIMPLE)
+    # Apply closing to fuse crossing junctions seamlessly
+    cross_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    table_mask = cv2.morphologyEx(table_mask, cv2.MORPH_CLOSE, cross_kernel)
+    
+    # Find contours on the mask
+    contours, hierarchy = cv2.findContours(
+        table_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
     
     cells = []
     img_area = thresh.shape[0] * thresh.shape[1]

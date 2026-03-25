@@ -5,3 +5,13 @@ __pycache__/
 debug_output/
 models/
 data/
+exports/
+debug_grid.py
+debug_grid_2.py
+inspect_cells.py
+test_dilate.py
+test_edge_synth.py
+test_ht.py
+crash_test.py
+dilate_output.txt
+cell_counts.txt
