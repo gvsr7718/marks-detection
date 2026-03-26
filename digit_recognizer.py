@@ -368,6 +368,12 @@ class DigitRecognizer:
                 if alex_d == '9' and ez_d == '4': return '4'
                 if alex_d == '5' and ez_d == '1': return '1'
                 
+                # Precise corrections for 2 vs 9 and 2 vs 5
+                if alex_d == '9' and ez_d == '2': return '2'
+                if alex_d == '2' and ez_d == '9': return '2'
+                if alex_d == '5' and ez_d == '2': return '2'
+                if alex_d == '2' and ez_d == '5': return '2'
+                
                 # Branch-Specific heuristic (Biasing towards 67 as per user's batch)
                 if pos == 7: # Second digit of branch
                     if alex_d in ['1', '2', '4', '9'] and ez_d in ['1', '2', '4', '9', '7']:

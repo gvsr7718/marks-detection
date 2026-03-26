@@ -320,15 +320,30 @@ def _extract_bottom_row_cells(gray, table):
             'h': last_box['h']
         }
 
-    # 3. Absolute Span Division
-    # Calculate exactly the empty space between the Label Cell and the Total Cell
-    span_start = label_cell['x'] + label_cell['w']
-    span_end = total_box['x']
-    span_width = span_end - span_start
+    # 3. Dynamic Forward Extrapolation (Bypassing Right-Margin Collapse)
+    # The right side of the paper is frequently lost to glare or paper curl, causing the TOTAL box 
+    # to be either completely undetected or merged. This shrinks the span.
+    # To mathematically guarantee alignment, we anchor on the solid left structure and 
+    # project exactly 12 columns forward using the median measured cell width.
     
-    # Slice the void mathematically into 12 perfect fractions
+    # Anchor point: The right edge of the left-most 'Q.NO.' / 'MARKS' label cell
+    span_start = label_cell['x'] + label_cell['w']
+    
+    # Calculate the true column-to-column step size (stride) which includes the ~3px printed border!
+    # Because median_w is just the internal white space, taking 12 steps of median_w misses 12 borders,
+    # causing a disastrous 36-pixel mathematical collapse to the left.
+    x_coords = sorted([c['x'] for c in marks_row_sorted if c['x'] > span_start - 20])
+    strides = [x_coords[i+1] - x_coords[i] for i in range(len(x_coords)-1)]
+    valid_strides = [s for s in strides if median_w * 0.8 < s < median_w * 1.5]
+    
+    if valid_strides:
+        true_stride = sorted(valid_strides)[len(valid_strides)//2]
+    else:
+        true_stride = median_w + 3 # fallback estimate of white space + border thickness
+        
+    chunk_w = float(true_stride)
+    
     interpolated_boxes = []
-    chunk_w = span_width / 12.0
     for idx in range(12):
         interpolated_boxes.append({
             'x': int(span_start + idx * chunk_w),
@@ -346,17 +361,27 @@ def _extract_bottom_row_cells(gray, table):
         if x2 > x1 and y2 > y1:
             mark_cells.append(gray[y1:y2, x1:x2])
 
-    # Crop Total Cell (with massive 2.0x downwards expansion to catch trailing handwriting)
-    tx1 = max(0, total_box['x'] + pad)
-    ty1 = max(0, total_box['y'] + pad)
-    tx2 = min(gray.shape[1], total_box['x'] + int(total_box['w'] * 1.2) - pad)
-    ty2 = min(gray.shape[0], total_box['y'] + int(total_box['h'] * 2.0) - pad)
+    # Crop Total Cell 
+    # Since the physical right margin might be lost, we anchor the Total Box exactly after the 12th fractional cell.
+    # With a massive 2.0x downwards expansion to catch trailing handwriting!
+    predicted_total_x = span_start + 12 * chunk_w
+    tx1 = max(0, int(predicted_total_x + pad))
+    ty1 = max(0, label_cell['y'] + pad)
+    
+    # Width is remainder of table, or at least 3x a normal cell width, to capture trailing numbers like "17/20"
+    total_w = max(int(chunk_w * 3), (table['x'] + table['w']) - predicted_total_x)
+    tx2 = min(gray.shape[1], int(predicted_total_x + total_w - pad))
+    ty2 = min(gray.shape[0], label_cell['y'] + int(label_cell['h'] * 2.0) - pad)
     
     if tx2 > tx1 and ty2 > ty1:
         total_cell = gray[ty1:ty2, tx1:tx2]
+    else:
+        total_cell = None
 
     # Re-inject our geometrically perfect 14 boxes into the abstract table data struct
     # Exactly: [Label] + [12 Marks] + [Total] = 14 bounds!
+    # Update total_box representation for visualization
+    total_box = {'x': int(predicted_total_x), 'y': label_cell['y'], 'w': int(total_w), 'h': label_cell['h']}
     table['rows'][-1] = [label_cell] + interpolated_boxes + [total_box]
 
     return mark_cells, total_cell, table

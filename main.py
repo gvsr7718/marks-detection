@@ -126,22 +126,49 @@ def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
             break
         label = question_labels[i]
 
+        # --- Stage 2.1: Pre-process cell (Center Crop to remove borders) ---
+        h, w = cell_img.shape[:2]
+        margin_h, margin_w = int(h * 0.05), int(w * 0.05)
+        inner_cell = cell_img[margin_h:h-margin_h, margin_w:w-margin_w]
+
         # Primary: EasyOCR on the cell crop (more robust for handwritten)
-        easyocr_val, easyocr_conf, _ = _easyocr_read_cell(recognizer, cell_img, max_val_allowed=10)
+        easyocr_val, easyocr_conf, _ = _easyocr_read_cell(recognizer, inner_cell, max_val_allowed=5)
 
         # Fallback: contour extraction + AlexNet
-        digit_images = extract_digit_contours(cell_img)
+        digit_images = extract_digit_contours(inner_cell)
         alexnet_val, alexnet_conf = recognizer.recognize_marks_from_cell(digit_images)
 
         # Use EasyOCR if it returned a plausible value; else AlexNet
-        if easyocr_val is not None and 0 <= easyocr_val <= 10:
+        if easyocr_val is not None and 0 <= easyocr_val <= 5:
             mark_val = easyocr_val
             conf = easyocr_conf
             src = "easyocr"
         else:
-            mark_val = alexnet_val
+            mark_val = min(alexnet_val, 5) if isinstance(alexnet_val, int) else 5
             conf = alexnet_conf
             src = "alexnet"
+            
+        # Consensus Voter: Precision corrections for common handwritten confusions
+        # We enforce a strict bias towards '1' or '2' if a '5' is disputed.
+        # We also fix '3' hallucinated from a '5', and a '3' hallucinated as a '2'.
+        if mark_val == 5:
+            if alexnet_val == 1 or easyocr_val == 1:
+                mark_val = 1
+                src = "consensus_override (5->1)"
+            elif alexnet_val == 2 or easyocr_val == 2:
+                mark_val = 2
+                src = "consensus_override (5->2)"
+        elif mark_val == 3 and (alexnet_val == 5 or easyocr_val == 5):
+            mark_val = 5
+            src = "consensus_override (3->5)"
+        elif mark_val == 2 and (alexnet_val == 3 or easyocr_val == 3):
+            # EasyOCR frequently collapses sloppy '3's into '2's. We rescue the '3'.
+            mark_val = 3
+            src = "consensus_override (2->3)"
+        elif mark_val == 0 and (alexnet_val == 1 or easyocr_val == 1):
+            # Sometimes thin '1's are missed by one model
+            mark_val = 1
+            src = "consensus_override (0->1)"
 
         marks[label] = {"value": mark_val, "confidence": round(conf, 2)}
         print(f"[DEBUG]   {label}: {mark_val} (conf={conf:.2f}, src={src}) "
@@ -204,6 +231,11 @@ def _process_descriptive(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
     else:
         descriptive_total = sum(m["value"] for m in marks.values())
 
+    # Absolute mathematical boundary applied globally to the test
+    if descriptive_total > 20:
+        print(f"[DEBUG] Mathematical Constraint: Total {descriptive_total} > 20. Forced down to 20.")
+        descriptive_total = 20
+
     # ── Stage 4: HT Number ──────────────────────────────────────────────────
     ht_row_data, ht_boxes = extract_ht_number_boxes(gray, thresh)
     print(f"[DEBUG] HT Number boxes found: {len(ht_boxes)}")
@@ -247,7 +279,7 @@ def _easyocr_read_cell(recognizer, cell_img, max_val_allowed=100):
         dark_pixels = _np.sum(binary == 0)
         total_pixels = binary.size
         dark_ratio = dark_pixels / total_pixels
-        if dark_ratio < 0.01:  # less than 1% ink → blank cell
+        if dark_ratio < 0.005:  # lowered to 0.5% ink to capture faint thin '1's
             return None, 0.0
 
         # Step 5: Add white border for OCR
