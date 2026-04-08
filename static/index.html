@@ -80,6 +80,7 @@
             font-weight: 700;
             background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
             margin-bottom: 0.5rem;
             letter-spacing: -0.5px;
@@ -467,14 +468,17 @@
 
                     <div class="result-field" style="margin-top: 1rem;">
                         <label>Descriptive Total</label>
-                        <input type="number" id="descTotalResult" placeholder="–">
+                        <input type="number" id="descTotalResult" placeholder="–" oninput="updateGrandTotal()">
                     </div>
-                </div>
+                    
+                    <div class="result-field" style="margin-top: 0.5rem;">
+                        <label>Objective Marks</label>
+                        <input type="number" id="manualObjMarks" placeholder="0" min="0" oninput="updateGrandTotal()">
+                    </div>
 
-                <div id="mcqResults" style="display: none;">
-                    <div class="result-field" style="margin-top: 1rem;">
-                        <label>MCQ Score</label>
-                        <input type="number" id="mcqScoreResult" placeholder="–">
+                    <div class="result-field" style="margin-top: 0.5rem;">
+                        <label>Grand Total</label>
+                        <input type="number" id="grandTotalResult" placeholder="–" readonly style="font-weight: bold; color: var(--accent-success); border-color: var(--accent-success);">
                     </div>
                 </div>
 
@@ -612,21 +616,26 @@
             document.getElementById('resultsSection').classList.add('show');
 
             // HT Number
-            let htNo = '';
+            // Smart preservation: if uploading an MCQ sheet, we don't clear an already extracted HT NO!
+            let htNo = document.getElementById('htNoResult').value;
+            if (sheetType === 'descriptive') {
+                htNo = ''; // Reset for a freshly uploaded descriptive sheet
+            }
+
             if (data.ht_no) {
                 if (typeof data.ht_no === 'string') {
                     htNo = data.ht_no;
-                } else if (typeof data.ht_no === 'object') {
-                    htNo = data.ht_no.value || '';
+                } else if (typeof data.ht_no === 'object' && data.ht_no.value) {
+                    htNo = data.ht_no.value;
                 }
             }
             document.getElementById('htNoResult').value = htNo;
 
-            if (sheetType === 'descriptive') {
-                document.getElementById('descriptiveResults').style.display = 'block';
-                document.getElementById('mcqResults').style.display = 'none';
+            // We always show the unified descriptive results view now
+            document.getElementById('descriptiveResults').style.display = 'block';
 
-                // Build marks grid
+            if (sheetType === 'descriptive') {
+                // Build marks grid for descriptive
                 const grid = document.getElementById('marksGrid');
                 grid.innerHTML = '';
                 const labels = ['q1a','q1b','q2a','q2b','q3a','q3b','q4a','q4b','q5a','q5b','q6a','q6b'];
@@ -638,17 +647,18 @@
                     div.className = 'result-field';
                     div.innerHTML = `
                         <label>${label.toUpperCase()}</label>
-                        <input type="number" id="mark_${label}" value="${val}" min="0" max="10" style="width:70px;">
+                        <input type="number" id="mark_${label}" value="${val}" min="0" max="10" style="width:70px;" oninput="updateDescriptiveTotal()">
                     `;
                     grid.appendChild(div);
                 });
 
                 document.getElementById('descTotalResult').value = data.descriptive_total || 0;
+                document.getElementById('manualObjMarks').value = '';
+                document.getElementById('grandTotalResult').value = data.descriptive_total || 0;
             } else {
-                document.getElementById('descriptiveResults').style.display = 'none';
-                document.getElementById('mcqResults').style.display = 'block';
-
-                document.getElementById('mcqScoreResult').value = data.mcq_score || 0;
+                // If it's an MCQ upload, we JUST seamlessly inject the objective marks and update the grand total!
+                document.getElementById('manualObjMarks').value = data.mcq_score || 0;
+                updateGrandTotal();
             }
         }
 
@@ -665,33 +675,29 @@
             const labels = ['q1a','q1b','q2a','q2b','q3a','q3b','q4a','q4b','q5a','q5b','q6a','q6b'];
             const marks = {};
 
-            if (sheetType === 'descriptive') {
-                labels.forEach(label => {
-                    const input = document.getElementById(`mark_${label}`);
-                    marks[label] = input ? parseInt(input.value) || 0 : 0;
-                });
-            }
+            // Always scrape descriptive marks from the DOM
+            labels.forEach(label => {
+                const input = document.getElementById(`mark_${label}`);
+                marks[label] = input ? parseInt(input.value) || 0 : 0;
+            });
 
             const descTotal = parseInt(document.getElementById('descTotalResult')?.value) || 0;
-            const mcqScore = parseInt(document.getElementById('mcqScoreResult')?.value) || 0;
+            const mcqScore = parseInt(document.getElementById('manualObjMarks')?.value) || 0;
 
             if (existingIdx >= 0) {
-                // Merge: update the existing entry
+                // Merge: update the existing entry comprehensively
                 const existing = batchEntries[existingIdx];
-                if (sheetType === 'descriptive') {
-                    existing.marks = marks;
-                    existing.descriptive_total = descTotal;
-                } else {
-                    existing.mcq_score = mcqScore;
-                }
-                existing.total = (existing.descriptive_total || 0) + (existing.mcq_score || 0);
+                existing.marks = marks;
+                existing.descriptive_total = descTotal;
+                existing.mcq_score = mcqScore;
+                existing.total = descTotal + mcqScore;
             } else {
                 // New entry
                 const entry = {
                     ht_no: htNo,
-                    marks: sheetType === 'descriptive' ? marks : {},
-                    descriptive_total: sheetType === 'descriptive' ? descTotal : 0,
-                    mcq_score: sheetType === 'mcq' ? mcqScore : 0,
+                    marks: marks,
+                    descriptive_total: descTotal,
+                    mcq_score: mcqScore,
                     total: descTotal + mcqScore
                 };
                 batchEntries.push(entry);
@@ -740,6 +746,29 @@
             document.getElementById('resultsSection').classList.remove('show');
             document.getElementById('previewImg').style.display = 'none';
             document.getElementById('statusMsg').classList.remove('show');
+        }
+
+        function updateDescriptiveTotal() {
+            const labels = ['q1a','q1b','q2a','q2b','q3a','q3b','q4a','q4b','q5a','q5b','q6a','q6b'];
+            let total = 0;
+            labels.forEach(label => {
+                const input = document.getElementById(`mark_${label}`);
+                if (input) {
+                    total += parseInt(input.value) || 0;
+                }
+            });
+            const descInput = document.getElementById('descTotalResult');
+            if (descInput) descInput.value = total;
+            updateGrandTotal();
+        }
+
+        function updateGrandTotal() {
+            const descTotal = parseInt(document.getElementById('descTotalResult')?.value) || 0;
+            const objMarks = parseInt(document.getElementById('manualObjMarks')?.value) || 0;
+            const grandTotalEl = document.getElementById('grandTotalResult');
+            if (grandTotalEl) {
+                grandTotalEl.value = descTotal + objMarks;
+            }
         }
 
         function clearBatch() {

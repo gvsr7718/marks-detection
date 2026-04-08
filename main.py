@@ -29,6 +29,7 @@ from mark_extractor import (
 )
 from digit_recognizer import get_digit_recognizer
 from spreadsheet_export import generate_combined_excel
+from objective_detector import extract_objective_marks_from_image
 
 # Debug directory
 DEBUG_DIR = "debug_output"
@@ -73,7 +74,17 @@ async def process_image(file: UploadFile = File(...), sheet_type: str = Form(...
     image_bytes = await file.read()
     
     try:
-        # Stage 1: Preprocessing
+        
+        if sheet_type == "mcq":
+            # For objective sheets, decode the raw bytes directly to perfectly match 
+            # cv2.imread behavior in the standalone objective_detector.py script.
+            np_arr = np.frombuffer(image_bytes, np.uint8)
+            img_raw = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if img_raw is None:
+                raise HTTPException(status_code=400, detail="Invalid objective sheet image.")
+            return _process_mcq(img_raw, None, None, None)
+            
+        # Stage 1: Preprocessing (Only for Descriptive Sheets)
         img_color, gray, thresh = preprocess_image(image_bytes)
         recognizer = get_digit_recognizer()
         
@@ -85,8 +96,6 @@ async def process_image(file: UploadFile = File(...), sheet_type: str = Form(...
         
         if sheet_type == "descriptive":
             return _process_descriptive(img_color, gray, thresh, recognizer)
-        elif sheet_type == "mcq":
-            return _process_mcq(img_color, gray, thresh, recognizer)
         else:
             raise HTTPException(status_code=400, detail="Unknown sheet type.")
     
@@ -319,18 +328,12 @@ def _process_mcq(img_color, gray, thresh, recognizer) -> Dict[str, Any]:
     """
     Process an MCQ answer sheet.
     
-    Extracts: HT No / Roll No, MCQ Score
+    Extracts only the MCQ Score using the robust objective_detector pipeline.
+    HT Number is intentionally skipped as it is extracted from the descriptive sheet.
     """
-    # Extract HT/Roll Number
-    ht_row_data, ht_boxes = extract_ht_number_boxes(gray, thresh)
-    ht_no, ht_conf = recognizer.recognize_ht_number(ht_row_data, ht_boxes)
-    
-    # Extract Score
-    score_roi = extract_mcq_score_region(gray)
-    mcq_score, score_conf = recognizer.recognize_score(score_roi)
+    mcq_score, score_conf = extract_objective_marks_from_image(img_color, debug=True, output_dir=DEBUG_DIR)
     
     return {
-        "ht_no": {"value": ht_no, "confidence": round(ht_conf, 2)},
         "mcq_score": mcq_score,
         "max_marks": 10
     }
